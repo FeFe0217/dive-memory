@@ -1,6 +1,6 @@
 # DIVE 最小流程
 
-当前阶段：第一条可运行路径。只使用Python标准库，不安装依赖；不是完整记忆系统，不是Oracle评测器。
+当前包含标准库记忆原型`dive_minimal.py`和独立的embedding验证脚本`embedding_probe.py`。记忆原型使用词法检索；BGE-M3已完成本机CPU小样本验证，尚未接入记忆原型。Oracle尚未运行。
 
 ## 先理解三个入口
 
@@ -49,7 +49,7 @@ python -X utf8 -B .\dive_minimal.py ask
 - 回答记录中的`hypothesis`是字符串，但这不是500题预测文件，没有Oracle题号，也不能提交为Oracle成绩。
 - 使用相同空间重复导入相同内容不会产生重复记录；相同来源ID却改写内容会报错，不静默覆盖。新一轮独立试验可使用`--namespace moving-demo-2`，后续search/ask也要指定同一个名称。
 
-仅使用公开自拟输入。日志可能包含问题及回答，不应用于真实敏感信息；删除与容量管理尚未实现。`runs/`和数据JSON已列入忽略规则；当前未初始化Git，也未提交或上传文件。
+仅使用公开自拟输入。日志可能包含问题及回答，不应用于真实敏感信息；删除与容量管理尚未实现。`runs/`、`.venv/`和数据JSON已列入忽略规则，不随代码上传。
 
 ## 词法检索与当前边界
 
@@ -57,7 +57,7 @@ SQLite FTS5在现有Python环境中已实际检查可用。检索前将英文转
 
 搬家示例故意保留共同措辞“居住地”，只验证数据路径。不会按已知问题添加特判，也不会读取答案或`has_answer`标记。无命中时不回退到全部历史。最多取3个片段、证据对象合计2400字符；这是工程默认值，不是模型Token数或已优化参数。过长片段可能因预算被跳过。
 
-已搭建的内容仅是选择性写入、持久化、有限词法检索、回答和日志。**关联新旧状态、自动容量遗忘、删除、语义检索与Oracle适配尚未实现。** 本例的时间/搬家理解主要交给回答模型，不能算已经实现系统级更新机制。
+记忆原型已实现选择性写入、持久化、有限词法检索、回答和日志。**关联新旧状态、自动容量遗忘、删除、语义检索接入与Oracle适配待实现。** 本例的时间/搬家理解主要交给回答模型，不能算已经实现系统级更新机制。
 
 ## 不联网的自动检查
 
@@ -79,11 +79,38 @@ python -X utf8 -B -m unittest discover -s tests -v
 
 此次流程共2次模型调用，输入733、输出82、合计815 Token；模型请求耗时合计2.484秒，不是端到端总耗时，不含此前11 Token的独立API冒烟测试；实际扣费未测。数据库中的3个ID与写入记录一致。
 
-原始证据记录（在本机保留，默认不纳入Git）：[导入](D:/DIVE/runs/logs/20261024-140927-465179dc.json)、[检索](D:/DIVE/runs/logs/20261024-141107-b72e62b5.json)、[回答](D:/DIVE/runs/logs/20261024-141219-d0ecc376.json)。三份状态均为成功。
+原始证据记录保存在本机`runs/logs/`，不纳入Git：导入`20261024-140927-465179dc.json`、检索`20261024-141107-b72e62b5.json`、回答`20261024-141219-d0ecc376.json`。三份状态均为成功。
 
 验收结论：自拟输入的最小端到端路径已跑通；回答模型在本例中理解了搬家证据，不能据此宣称系统已实现通用新旧状态更新或遗忘。Oracle尚未运行，没有Benchmark成绩。
+
+## 2026-11-08 BGE-M3 CPU验证
+
+`embedding_probe.py`单独验证文本编码和语义排序，不调用DeepSeek，不写入记忆数据库。输入为8条自拟中英文片段和4个问题；每个问题在同语言的4个候选内排序。预期片段ID仅用于检查输出，不交给模型。
+
+环境：Windows、Python 3.12.16、PyTorch 2.15.0+cpu、Sentence Transformers 6.2.0、Transformers 5.22.2、NumPy 2.5.4、Hugging Face Hub 2.4.0。CPU使用8线程，批量2条，长度上限512 Token。本次12条输入各为9—24个模型Token，均未截断。
+
+在独立Python 3.12环境中安装并运行：
+
+```powershell
+python -m pip install torch==2.15.0+cpu --index-url https://download.pytorch.org/whl/cpu
+python -m pip install sentence-transformers==6.2.0 transformers==5.22.2 numpy==2.5.4 huggingface-hub==2.4.0
+python -X utf8 -B .\embedding_probe.py
+```
+
+首次运行下载模型；缓存位于`runs/models/`，记录位于`runs/embedding-probe/`，均被Git忽略。脚本固定模型修订为本次下载缓存指向的`5617a9f61b028005a4858fdac845db406aefb181`。
+
+| 检查 | 实际结果 |
+|---|---|
+| 模型加载 | 成功；首次加载含下载306.817秒 |
+| 向量 | 12×1024，数值和归一化检查通过 |
+| 文本编码 | 合计0.634秒，不含模型加载和下载 |
+| 自拟语义排序 | 4个问题的预期片段均排第一 |
+| 付费模型API调用 | 0次 |
+
+结果来源为本地记录`runs/embedding-probe/20261108-101125-4731feea.json`。该记录中的自动识别模型修订为空；之后依据缓存修订固定脚本版本，未重新运行。此结果支持在本机继续接入BGE-M3；Oracle准确率、长输入与规模化速度、峰值内存、更新和遗忘能力仍待验证。
 
 ## 来源
 
 - [DeepSeek官方Chat Completions文档](https://api-docs.deepseek.com/api/create-chat-completion/)：本次文本接口适配依据；默认模型使用此前已实际调用过的`deepseek-flash`。
-- [Oracle数据来源与检查记录](D:/DIVE/data/README.md)。本入口不运行Oracle；后续需要单独适配时间排序、标签剥离与实例隔离。
+- [Oracle数据来源与检查记录](data/README.md)。本入口不运行Oracle；后续需要单独适配时间排序、标签剥离与实例隔离。
+- [BGE-M3官方模型说明](https://huggingface.co/BAAI/bge-m3)：本机embedding验证所用模型。
