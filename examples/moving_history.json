@@ -1,0 +1,38 @@
+{
+  "kind": "synthetic-interface-check",
+  "note": "教学用自拟历史，不是真实用户信息，也不是Oracle。居住地措辞重复，用于检查词法路径，不验证同义检索。",
+  "sessions": [
+    {
+      "session_id": "s1",
+      "date": "2026-09-10T10:00:00+08:00",
+      "messages": [
+        {"role": "user", "content": "我目前的居住地是成都。"},
+        {"role": "assistant", "content": "了解，你目前住在成都。"}
+      ]
+    },
+    {
+      "session_id": "s2",
+      "date": "2026-10-17T10:00:00+08:00",
+      "messages": [
+        {"role": "user", "content": "10月1日我已经搬到了杭州，现在的居住地是杭州。"},
+        {"role": "assistant", "content": "了解，这是一次已经发生的搬家。"}
+      ]
+    },
+    {
+      "session_id": "s3",
+      "date": "2026-10-18T10:00:00+08:00",
+      "messages": [
+        {"role": "user", "content": "今天去上海出差，10月20日返回杭州。"},
+        {"role": "assistant", "content": "明白，这是临时出差。"}
+      ]
+    },
+    {
+      "session_id": "s4",
+      "date": "2026-10-19T10:00:00+08:00",
+      "messages": [
+        {"role": "user", "content": "谢谢，先聊到这里。"},
+        {"role": "assistant", "content": "再见！"}
+      ]
+    }
+  ]
+}
