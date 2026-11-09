@@ -5,3 +5,4 @@ __pycache__/
 !.env.example
 runs/
 data/*.json
+.venv/
