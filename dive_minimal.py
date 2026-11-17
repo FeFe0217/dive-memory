@@ -29,6 +29,24 @@ CONTEXT_CHARS = 2_400
 class ModelError(RuntimeError):
     """A failed call is a runtime error, never an evidence-based abstention."""
 
+    def __init__(self, message, *, call_info=None):
+        super().__init__(message)
+        self.call_info = None
+        if isinstance(call_info, dict):
+            safe = {field: call_info[field] for field in (
+                "provider", "requested_model", "model"
+            ) if isinstance(call_info.get(field), str)}
+            seconds = call_info.get("seconds")
+            if type(seconds) in (int, float) and 0 <= seconds < float("inf"):
+                safe["seconds"] = seconds
+            usage = call_info.get("usage")
+            if isinstance(usage, dict):
+                safe["usage"] = {field: usage[field] for field in (
+                    "prompt_tokens", "completion_tokens", "total_tokens",
+                    "prompt_cache_hit_tokens", "prompt_cache_miss_tokens"
+                ) if type(usage.get(field)) is int and usage[field] >= 0}
+            self.call_info = safe
+
 
 def require_text(value, label):
     if not isinstance(value, str) or not value.strip():
@@ -273,26 +291,32 @@ class DeepSeekModel:
             raise ModelError("模型连接失败或超时；未自动重试") from None
         except (ValueError, UnicodeError):
             raise ModelError("模型接口未返回有效JSON") from None
+        if not isinstance(result, dict):
+            raise ModelError("模型响应结构不符合预期")
+        usage = result.get("usage", {})
+        if not isinstance(usage, dict):
+            usage = {}
+        safe_usage = {field: usage[field] for field in (
+            "prompt_tokens", "completion_tokens", "total_tokens",
+            "prompt_cache_hit_tokens", "prompt_cache_miss_tokens"
+        ) if type(usage.get(field)) is int and usage[field] >= 0}
+        actual_model = result.get("model", self.model)
+        call_info = {"provider": "deepseek", "requested_model": self.model,
+                     "model": actual_model if isinstance(actual_model, str) else self.model,
+                     "seconds": round(time.perf_counter() - start, 3), "usage": safe_usage}
         try:
             choice = result["choices"][0]
+            if not isinstance(choice, dict) or not isinstance(choice.get("message"), dict):
+                raise TypeError("Invalid completion choice")
             content = choice["message"]["content"]
             if choice.get("finish_reason") != "stop":
-                raise ModelError("模型输出未正常结束（可能达到长度上限），不保存为成功结果")
+                raise ModelError("模型输出未正常结束（可能达到长度上限），不保存为成功结果",
+                                 call_info=call_info)
             if not isinstance(content, str) or not content.strip():
-                raise ModelError("模型返回空内容")
-            usage = result.get("usage", {})
-            if not isinstance(usage, dict):
-                usage = {}
-            safe_usage = {field: usage[field] for field in (
-                "prompt_tokens", "completion_tokens", "total_tokens",
-                "prompt_cache_hit_tokens", "prompt_cache_miss_tokens"
-            ) if type(usage.get(field)) is int}
-            actual_model = result.get("model", self.model)
-            return content, {"provider": "deepseek", "requested_model": self.model,
-                             "model": actual_model if isinstance(actual_model, str) else self.model,
-                             "seconds": round(time.perf_counter() - start, 3), "usage": safe_usage}
+                raise ModelError("模型返回空内容", call_info=call_info)
+            return content, call_info
         except (KeyError, IndexError, TypeError):
-            raise ModelError("模型响应结构不符合预期") from None
+            raise ModelError("模型响应结构不符合预期", call_info=call_info) from None
 
 
 def read_model(model_name):
