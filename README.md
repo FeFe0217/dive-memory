@@ -1,116 +1,119 @@
-# DIVE 最小流程
+# DIVE Memory
 
-当前包含标准库记忆原型`dive_minimal.py`和独立的embedding验证脚本`embedding_probe.py`。记忆原型使用词法检索；BGE-M3已完成本机CPU小样本验证，尚未接入记忆原型。Oracle尚未运行。
+长期AI交互记忆项目。当前主线为`dive_memory.py`及`oracle_probe.py validate-design`，提供来源可追溯的声明提取、查旧、关系判断、证据检索、回答和记录。
 
-## 先理解三个入口
+**状态：**80项离线测试通过；1题真实LongMemEval Oracle完整调用链完成，人工核对回答与参考一致，尚无官方Judge成绩。当前仍是设计验证程序，通用增量交互、删除、容量管理和500题批量入口待实现。
 
-| 命令 | 输入→输出 | 是否调用模型 |
-|---|---|---|
-| ingest | 自拟历史→模型选片段ID→程序校验并将原文保存到SQLite | 1次 |
-| search | 问题→数据库检索→显示证据 | 不调用 |
-| ask | 问题→数据库检索→有限证据交给模型→回答与运行记录 | 有证据时1次，否则程序说明证据不足 |
+## 文件与入口
 
-导入结束后程序退出，提问时重新启动程序，只读取数据库，不再读取历史输入文件。模型调用接口与记忆逻辑分开，未来可以替换模型适配器。
+| 文件 | 用途 |
+|---|---|
+| `dive_memory.py` | 声明、编号组、操作校验、来源级纠错及派生状态 |
+| `oracle_probe.py validate-design` | 当前主线：检索检查、自拟语义验证、单题Oracle与受限恢复 |
+| `embedding_probe.py` | 独立BGE-M3环境检查、首次下载、自拟排序验证 |
+| `dive_minimal.py` | 早期标准库词法原型；同时提供现有DeepSeek适配器 |
+| `oracle_probe.py plan/run` | 早期准入与检索探测，不包含当前W1/W2更新逻辑 |
+| `DIVE_方案工作稿.md` | 首版方案、进展、预算与后续计划 |
 
-## 在Windows PowerShell中按顺序运行
+## 1. 安装环境
 
-进入项目：
+已验证Windows、Python 3.12.16。以下在PowerShell执行，使用独立Conda环境；已有项目环境也可使用其Python。`D:\DIVE`为本机示例，其他位置使用实际项目路径。
 
 ```powershell
 Set-Location D:\DIVE
+conda create -n dive-memory python=3.12 pip
+conda activate dive-memory
+python -m pip install torch==2.15.0+cpu --index-url https://download.pytorch.org/whl/cpu
+python -m pip install sentence-transformers==6.2.0 transformers==5.22.2 numpy==2.5.4 huggingface-hub==2.4.0
 ```
 
-1. 导入自拟历史。先看读取的会话/片段数量，再在隐藏提示中输入DIVE专用密钥。密钥不显示、不写入文件、不放在命令参数中。请勿发到聊天里。
+SQLite由Python标准库提供，不另部署数据库服务。
+
+## 2. 模型与公开数据
+
+初次运行下列命令下载固定版本BGE-M3并检查编码，需要网络和磁盘空间。后续验证只加载缓存，不自动重新下载。
 
 ```powershell
-python -X utf8 -B .\dive_minimal.py ingest
+python -X utf8 -B .\embedding_probe.py
 ```
 
-2. 上一步退出后，仅检查检索。应检查是否找到成都与杭州的原话及日期；结果不正确就停下排查，不急着调用模型。
+缓存为`runs/models/`，修订为`5617a9f61b028005a4858fdac845db406aefb181`。使用CPU，最多8线程、批量2条、上限512个BGE Token。
+
+按[data/README.md](data/README.md)获取Oracle，或在项目根目录执行：
 
 ```powershell
-python -X utf8 -B .\dive_minimal.py search
+Invoke-WebRequest -Uri "https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned/resolve/98d7416c24c778c2fee6e6f3006e7a073259d48f/longmemeval_oracle.json" -OutFile .\data\longmemeval_oracle.json
+Get-FileHash -LiteralPath .\data\longmemeval_oracle.json -Algorithm SHA256
 ```
 
-3. 查看回答。再次在本机隐藏输入密钥，只把检索到的有限证据交给模型，不是整段历史。
+预期SHA256：`821a2034d219ab45846873dd14c14f12cfe7776e73527a483f9dac095d38620c`。原文件不改写，不上传仓库。
 
-```powershell
-python -X utf8 -B .\dive_minimal.py ask
-```
+## 3. 离线检查
 
-模型选择可能不同，应查看实际输出，不预先声称必然保留3个片段或必然答对。两次模型调用均有费用，每次最多输出256 Token，无自动重试；实际Token与耗时保存在成功调用记录中。没有实际测量前不估算总价。
-
-密钥仅在当前进程内使用，退出后不会持久保存。这不是操作系统级秘密存储，也不保证清除所有内存副本；目前无需先配置永久密钥即可完成这条路径。
-
-## 检查结果在哪里
-
-- `runs/memory.sqlite3`：已选择的证据、原始说话人、来源日期及词法索引，不保存密钥。
-- `runs/logs/`：每次运行独立JSON记录。成功、失败、所选/检索证据ID、模型、Token和耗时分开记录；不输出请求头和服务端错误正文。
-- 回答记录中的`hypothesis`是字符串，但这不是500题预测文件，没有Oracle题号，也不能提交为Oracle成绩。
-- 使用相同空间重复导入相同内容不会产生重复记录；相同来源ID却改写内容会报错，不静默覆盖。新一轮独立试验可使用`--namespace moving-demo-2`，后续search/ask也要指定同一个名称。
-
-仅使用公开自拟输入。日志可能包含问题及回答，不应用于真实敏感信息；删除与容量管理尚未实现。`runs/`、`.venv/`和数据JSON已列入忽略规则，不随代码上传。
-
-## 词法检索与当前边界
-
-SQLite FTS5在现有Python环境中已实际检查可用。检索前将英文转为小写词，将连续中文拆成相邻双字片段，例如“居住地”成为“居住”“住地”，再按词法匹配排序。它不是中文语义分词，更不能保证“住哪里”和“搬家”互相匹配；单字查询也存在明显限制。
-
-搬家示例故意保留共同措辞“居住地”，只验证数据路径。不会按已知问题添加特判，也不会读取答案或`has_answer`标记。无命中时不回退到全部历史。最多取3个片段、证据对象合计2400字符；这是工程默认值，不是模型Token数或已优化参数。过长片段可能因预算被跳过。
-
-记忆原型已实现选择性写入、持久化、有限词法检索、回答和日志。**关联新旧状态、自动容量遗忘、删除、语义检索接入与Oracle适配待实现。** 本例的时间/搬家理解主要交给回答模型，不能算已经实现系统级更新机制。
-
-## 不联网的自动检查
+单元测试使用模拟模型，不读取密钥、不下载模型、不产生API费用：
 
 ```powershell
 python -X utf8 -B -m unittest discover -s tests -v
 ```
 
-自动检查使用模拟模型与临时数据库，不读取密钥、不产生API费用，也不能替代真实模型调用。
-
-## 2026-10-24 实际运行结果
-
-用户已在本机分别执行三个命令；程序之间退出重启，模型真实调用，非模拟结果：
-
-| 步骤 | 实际结果 | 调用记录 |
-|---|---|---|
-| ingest | 4个候选中选择并写入3个：s1#r0、s2#r0、s3#r0 | 输入448、输出24、合计472 Token；1.127秒 |
-| search | 从数据库取回s2#r0与s1#r0，即杭州和成都原文 | 无模型调用 |
-| ask | 只依据检索证据回答当前居住地为杭州，引用来源ID | 输入285、输出58、合计343 Token；1.357秒 |
-
-此次流程共2次模型调用，输入733、输出82、合计815 Token；模型请求耗时合计2.484秒，不是端到端总耗时，不含此前11 Token的独立API冒烟测试；实际扣费未测。数据库中的3个ID与写入记录一致。
-
-原始证据记录保存在本机`runs/logs/`，不纳入Git：导入`20261024-140927-465179dc.json`、检索`20261024-141107-b72e62b5.json`、回答`20261024-141219-d0ecc376.json`。三份状态均为成功。
-
-验收结论：自拟输入的最小端到端路径已跑通；回答模型在本例中理解了搬家证据，不能据此宣称系统已实现通用新旧状态更新或遗忘。Oracle尚未运行，没有Benchmark成绩。
-
-## 2026-11-08 BGE-M3 CPU验证
-
-`embedding_probe.py`单独验证文本编码和语义排序，不调用DeepSeek，不写入记忆数据库。输入为8条自拟中英文片段和4个问题；每个问题在同语言的4个候选内排序。预期片段ID仅用于检查输出，不交给模型。
-
-环境：Windows、Python 3.12.16、PyTorch 2.15.0+cpu、Sentence Transformers 6.2.0、Transformers 5.22.2、NumPy 2.5.4、Hugging Face Hub 2.4.0。CPU使用8线程，批量2条，长度上限512 Token。本次12条输入各为9—24个模型Token，均未截断。
-
-在独立Python 3.12环境中安装并运行：
+本地语义检索检查需要已有模型缓存，无付费请求：
 
 ```powershell
-python -m pip install torch==2.15.0+cpu --index-url https://download.pytorch.org/whl/cpu
-python -m pip install sentence-transformers==6.2.0 transformers==5.22.2 numpy==2.5.4 huggingface-hub==2.4.0
-python -X utf8 -B .\embedding_probe.py
+python -X utf8 -B .\oracle_probe.py validate-design --validation-mode retrieval
 ```
 
-首次运行下载模型；缓存位于`runs/models/`，记录位于`runs/embedding-probe/`，均被Git忽略。脚本固定模型修订为本次下载缓存指向的`5617a9f61b028005a4858fdac845db406aefb181`。
+测试覆盖来源、引用、时间、部分纠错、冲突、持久化重开、证据依赖、完整预算、用量和恢复。离线通过不能代替真实模型效果评测。
 
-| 检查 | 实际结果 |
-|---|---|
-| 模型加载 | 成功；首次加载含下载306.817秒 |
-| 向量 | 12×1024，数值和归一化检查通过 |
-| 文本编码 | 合计0.634秒，不含模型加载和下载 |
-| 自拟语义排序 | 4个问题的预期片段均排第一 |
-| 付费模型API调用 | 0次 |
+## 4. 单题真实Oracle
 
-结果来源为本地记录`runs/embedding-probe/20261108-101125-4731feea.json`。该记录中的自动识别模型修订为空；之后依据缓存修订固定脚本版本，未重新运行。此结果支持在本机继续接入BGE-M3；Oracle准确率、长输入与规模化速度、峰值内存、更新和遗忘能力仍待验证。
+```powershell
+python -X utf8 -B .\oracle_probe.py validate-design --validation-mode oracle --start 0 --max-calls 16
+```
 
-## 来源
+`--start`从0开始。密钥仅在本机隐藏输入，不写入代码、参数或日志。当前模型为`deepseek-flash`，关闭思考模式。新付费请求逐次显示阶段，无自动重试。
 
-- [DeepSeek官方Chat Completions文档](https://api-docs.deepseek.com/api/create-chat-completion/)：本次文本接口适配依据；默认模型使用此前已实际调用过的`deepseek-flash`。
-- [Oracle数据来源与检查记录](data/README.md)。本入口不运行Oracle；后续需要单独适配时间排序、标签剥离与实例隔离。
-- [BGE-M3官方模型说明](https://huggingface.co/BAAI/bge-m3)：本机embedding验证所用模型。
+`--max-calls`是新请求硬上限，不是每题固定次数。W1提取后，按声明和完整输入大小重新规划W2并核对剩余额度。W1/W2/回答输出上限为4096/2048/512 Token，输入另计。
+
+路径：历史整理→W1选择和提取→原文向量查旧→W2提案及程序校验→SQLite保存重开→有限证据→回答与预测。摄入不传未来问题、答案、题型、`has_answer`或带标签的原会话ID。
+
+## 5. 结果与恢复
+
+每次验证在`runs/design-validation/`下生成独立目录：
+
+- `summary.json`：版本、配置、结果、复用、用量与失败位置。
+- `calls.jsonl`：新请求开始及结果；同一编号统计最后一条，不能重复计费。
+- `responses.jsonl`：有界请求及返回，校验前保存，用于离线复核。
+- `memory.sqlite3`：完整处理后的验证快照，非生产数据库结构。
+- `predictions.jsonl`：成功答题后生成`question_id`和字符串`hypothesis`。
+
+在相同Oracle命令后添加`--resume-from`并指定本人先前生成的目录，可核验复用返回。先附加`--replay-only`进行不读取密钥的离线恢复；缺少下一阶段返回时，状态为`replay_incomplete`，程序退出码为2，表示还有真实步骤待执行。真实续跑时移除该参数，并设置新增请求上限。
+
+恢复检查数据、题目、模型、输入、声明编号和依赖。不匹配或记录不完整时停止，不自动重新付费。原日志不改写，复用与新调用分开记录；修改提示/规则后的旧返回复核不代表新提示已实测。仅支持受限单题恢复，不提供任意跨版本迁移。
+
+用量缺失标未知，推导和矛盾单列；接口故障不转为正常拒答。日志仅用于公开实验数据，可能包含原文与回答。
+
+## 6. 规则与边界
+
+声明是来源、时间和有效状态的唯一依据，持久组只保存`record_id/support_ids`。支持保留声明身份；变化方向由可靠时间计算；纠错或撤回定位具体声明，其他独立依据继续有效。合法来源的矛盾关系保留待确认，未知ID、伪造引用仍拒绝。
+
+问题检索最多8个原文候选。证据补齐关键观察、上下文及变化/纠错依赖，同时受8个片段、16 KiB证据和24 KiB完整请求约束。超限省略整个依赖组并标记不完整；依赖很大时可能没有可用证据，准确率需另测。消息日期不自动等于事件日期。
+
+当前单次Oracle从空空间处理历史并保存快照，不代表已完成持续增量SDK或交互应用。删除、容量设计见方案，尚未实现。
+
+## 7. 已有结果
+
+2026-11-14首题`gpt4_2655b836`完成：33条声明、30次新增、3次待确认，数据库重开一致。回答为首次保养后的GPS故障，引用两条原文，人工核对与参考一致，未运行官方Judge。
+
+续跑复用7条返回，新增8次请求、55,612 Token；本题两次运行累计15次请求、87,867 Token，模型请求耗时44.13秒，不含本地加载等时间。本题未成功执行支持合并、变化、纠错或撤回，不能认定全部机制通过真实评测。
+
+离线测试80项通过。本地记录为`runs/design-validation/acceptance-20261114-165233/`及`runs/design-validation/20261114-100213-20bafda1/`，不随仓库上传。当前没有全量500题成绩。
+
+## 提交范围与参考
+
+只提交代码、测试、方案及复现说明。忽略`runs/`、`.venv/`、数据JSON、`.env`和Python缓存。手册及导师邮件不纳入代码提交，密钥不写入提交文件。
+
+- [技术方案](DIVE_方案工作稿.md)
+- [Oracle来源与检查](data/README.md)
+- [LongMemEval官方代码](https://github.com/xiaowu0162/LongMemEval)
+- [BGE-M3](https://huggingface.co/BAAI/bge-m3)
+- [DeepSeek接口](https://api-docs.deepseek.com/api/create-chat-completion/)
